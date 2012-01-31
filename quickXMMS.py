@@ -25,7 +25,8 @@ class QuickXMMS(XMMS):
         for i in [i['regfun'] for i in self.valid_events 
                   if i['name'] == event]:
           i(handler)
-      self.listeners.append({'event': event, 'handler:': handler})    
+      self.listeners.append({'event': event, 'handler:': handler})
+      print "add "+ event
       return len(self.listeners) - 1
 
   def removeListener(self, id):
@@ -38,6 +39,8 @@ class QuickXMMS(XMMS):
                               'regfun': self.broadcast_playback_status})
     self.valid_events.append({'name': 'song_change',
                               'regfun': self.broadcast_playback_current_id})
+    self.valid_events.append({'name': 'pos_change',
+                              'regfun': self.broadcast_playlist_current_pos})
     #TODO: try/catch
     self.connect()
 
@@ -47,6 +50,12 @@ class QuickXMMS(XMMS):
 
   def next(self):
     res = self.__sendCommand(self.playlist_set_next_rel(1))
+    self.__sendCommand(self.playback_tickle())
+    return res
+
+  def jumpTo(self, curpos, id):
+    self.__sendCommand(self.playlist_insert_id(curpos['position'], id))
+    res = self.__sendCommand(self.playlist_set_next_rel(-1))
     self.__sendCommand(self.playback_tickle())
     return res
 
@@ -74,8 +83,17 @@ class QuickXMMS(XMMS):
   def getSongInfo(self, id):
     return self.__sendCommand(self.medialib_get_info(id))
 
+  def getCurrentPos(self):
+    pos =  self.__sendCommand(self.playlist_current_pos())
+    return pos
+
+  def getCurrentID(self):
+    aid =  self.__sendCommand(self.playback_current_id())
+    return aid
+
   def getPlayTime(self):
-    return self.__sendCommand(self.playback_playtime(id))
+    time = self.__sendCommand(self.playback_playtime(id))
+    return time  
 
   def search(self, query, columns_to_return):
     coll = xmms_coll_parse(query)
@@ -88,6 +106,7 @@ class QuickXMMSModel:
   currentInfo = dict()
   currentTime = 0
   currentStatus = -1
+  currentPos = -1
   xmms = None
 
   def do_on_status_change(self, newStatus):
@@ -96,11 +115,14 @@ class QuickXMMSModel:
   def do_on_song_change(self, newSongId):
     self.currentInfo = self.xmms.getSongInfo(newSongId.value())
 
+  def do_on_pos_change(self, newPos):
+    self.currentPos = newPos.value()
+
   def get_artist(self):
-    if 'artist' in self.currentInfo:
-      return self.currentInfo['artist'].encode('utf-8')
+    if ('plugin/id3v2', 'artist') in self.currentInfo:
+      return self.currentInfo[('plugin/id3v2', 'artist')].encode('utf-8')
     else:
-      return ''
+      return 'neca'
 
   def get_album(self):
     if 'album' in self.currentInfo:
@@ -122,16 +144,20 @@ class QuickXMMSModel:
     return self.currentTime
 
   def search(self, query, result_columns):
-    query = '*' + query + '*'
+    query = '"*' + query + '*"'
     return self.xmms.search(query, result_columns)
 
   def __init__(self):
     self.xmms = QuickXMMS()
     self.xmms.addListener("status_change", self.do_on_status_change)
     self.xmms.addListener("song_change", self.do_on_song_change)
+    self.xmms.addListener("pos_change", self.do_on_pos_change)
     self.t = Thread(target=self.xmms.loop)
     self.t.daemon = True
     self.t.start()
+    self.currentPos = self.xmms.getCurrentPos()
+    self.currentInfo = self.xmms.getSongInfo(self.xmms.getCurrentID())
+    
     
 commands = dict({"t": QuickXMMS.toggle,
                  "p": QuickXMMS.prev,
@@ -161,6 +187,7 @@ class QuickXMMSView:
     self.win.addstr(4, 1, 'Title: ' + self.model.get_title())
     self.win.clrtoeol()
     self.win.addstr(5, 1, self.model.get_time().isoformat())
+    self.win.addstr(6, 1, str(self.model.currentPos))
 
   def execute_command(self, key):
     if key in commands:
@@ -173,18 +200,15 @@ class QuickXMMSView:
     win_edit = self.win.subwin(1, win_width - 2, 1, 1)
     edit = curses.textpad.Textbox(win_edit)
     lb = listbox.ListBox(self.win, 0, 3, win_height - 4, win_width)
-
-    edit.edit()
-    query = edit.gather()[:-1]
-    results = self.model.search(query,
-                                ['artist', 'album', 'title'])
-    results.insert(0, '*' + query + '*')
-    lb.items = results
-    lb.refresh()
-    
+#    win_edit.clrtoeol()
+#    edit.edit()
+#    query = edit.gather()[:-1]
+#    results = self.model.search(query,
+#                                ['id', 'artist', 'album', 'title'])
+#    lb.items = results
+#    lb.refresh()
+    key = 102
     while 1:
-      curses.curs_set(0)
-      key = self.win.getch(1, 1)
       if key > -1:
         if key == curses.KEY_UP:
           lb.scroll(-1)
@@ -194,29 +218,43 @@ class QuickXMMSView:
           lb.scroll(3)
         elif key == curses.KEY_PPAGE:
           lb.scroll(-3)
-        else:
+        elif key == 102:
           curses.curs_set(1)
+          win_edit.clrtoeol()
           edit.edit()
+          
           query = edit.gather()[:-1]
           results = self.model.search(query,
-                                      ['artist', 'album', 'title'])
-          results.insert(0, '*' + query + '*')
+                                      ['id', 'artist', 'album', 'title'])
           lb.items = results
           lb.refresh()
+        elif key == 10:
+          self.model.xmms.jumpTo(self.model.currentPos, lb.items[lb.sel_item]['id'])
+          break
+        elif key == 120:
+          break
+      curses.curs_set(0)
+      key = self.win.getch(1, 1)
+
     curses.curs_set(1)
+    self.win.clear()
+    
 
   def main_loop(self):
-    self.search()
+#    self.search()
     while 1:
       key = (self.win.getch(1, 1))
       if key > -1:
-        print key
-        char = chr(key)
+#        print key
         if key == 27:
           self.model.xmms.exit_loop()
           break
+        elif key == 115:
+          self.search()
         else:
-          self.execute_command(char)
+          if key < 256:
+            char = chr(key)
+            self.execute_command(char)
       self.update()
 
 def go():
@@ -232,9 +270,9 @@ def go():
     curses.endwin()
     print 'end'
 
+go()
 a = QuickXMMS()
 b = QuickXMMSModel()
-go()
 #print a.next()
 #print a.prev()
 #a.xmms.broadcast_playback_current_id(a.b_on_current_id)

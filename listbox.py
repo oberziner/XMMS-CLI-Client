@@ -37,7 +37,7 @@ class ListBox:
 
         self.win.clrtobot()
         self.win.border()
-        self.win.addstr(self.height -1, 2, str(self.sel_item))
+        self.win.addstr(self.height -1, 2, str(self.sel_item) + ' of ' + str(len(self.items)))
         self.win.refresh()
     
     def scroll(self, lines):
